@@ -239,8 +239,7 @@ public class WizardFragment extends Fragment {
         mSaveLocationLayout.getEditText()
                 .setText(PreferenceManager.getDefaultSharedPreferences(requireContext())
                         .getString(SharedPreferenceKeys.PROJECT_SAVE_PATH,
-                                requireContext().getExternalFilesDir("Projects")
-                                        .getAbsolutePath()));
+                                Environment.getExternalStorageDirectory().getAbsolutePath() + "/Documents/CodeAssistProjects"));
         initializeSaveLocation();
 
         mSaveLocationLayout.getEditText().addTextChangedListener(new SingleTextWatcher() {
