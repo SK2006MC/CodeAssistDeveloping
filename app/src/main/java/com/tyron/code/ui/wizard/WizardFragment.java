@@ -288,8 +288,7 @@ public class WizardFragment extends Fragment {
     private void initializeSaveLocation() {
         if (mUseInternalStorage) {
             mSaveLocationLayout.setHelperText(getString(R.string.wizard_scoped_storage_info));
-            mSaveLocationLayout.getEditText().setText(requireContext()
-                    .getExternalFilesDir("Projects").getAbsolutePath());
+            mSaveLocationLayout.getEditText().setText(Environment.getExternalStorageDirectory().getAbsolutePath() + "/Documents/CodeAssistProjects");
             mSaveLocationLayout.getEditText().setInputType(InputType.TYPE_NULL);
         }
 //        mSaveLocationLayout.setEndIconOnClickListener(view -> {
