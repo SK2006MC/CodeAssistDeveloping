@@ -411,7 +411,7 @@ public class WizardFragment extends Fragment {
         File file = new File(
                 PreferenceManager.getDefaultSharedPreferences(requireContext())
                         .getString(SharedPreferenceKeys.PROJECT_SAVE_PATH,
-                                requireContext().getExternalFilesDir("Projects").getAbsolutePath())
+                                Environment.getExternalStorageDirectory().getAbsolutePath() + "/Documents/CodeAssistProjects")
                         + "/" + editable.toString());
         String suffix = "";
         if (file.exists()) {
