@@ -308,13 +308,12 @@ public class ProjectManagerFragment extends Fragment {
         toggleLoading(true);
 
         Executors.newSingleThreadExecutor().execute(() -> {
-            String path;
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                path = requireContext().getExternalFilesDir("Projects").getAbsolutePath();
-            } else {
-                path = mPreferences.getString(SharedPreferenceKeys.PROJECT_SAVE_PATH,
-                        requireContext().getExternalFilesDir("Projects").getAbsolutePath());
-            }
+            String defaultPath = Environment.getExternalStorageDirectory().getAbsolutePath() + "/Documents/CodeAssistProjects";
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            path = defaultPath;
+        } else {
+            path = mPreferences.getString(SharedPreferenceKeys.PROJECT_SAVE_PATH, defaultPath);
+        }
             File projectDir = new File(path);
             File[] directories = projectDir.listFiles(File::isDirectory);
 
