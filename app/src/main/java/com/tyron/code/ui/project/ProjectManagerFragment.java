@@ -12,6 +12,7 @@ import android.os.Environment;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
+import android.net.Uri;
 
 import androidx.activity.result.ActivityResultLauncher;
 import androidx.activity.result.contract.ActivityResultContracts;
@@ -26,6 +27,7 @@ import androidx.preference.PreferenceManager;
 import androidx.recyclerview.widget.LinearLayoutManager;
 import androidx.recyclerview.widget.RecyclerView;
 import androidx.transition.TransitionManager;
+import androidx.documentfile.provider.DocumentFile;
 
 import com.github.angads25.filepicker.model.DialogConfigs;
 import com.github.angads25.filepicker.model.DialogProperties;
@@ -109,29 +111,30 @@ public class ProjectManagerFragment extends Fragment {
         MaterialToolbar toolbar = view.findViewById(R.id.toolbar);
         toolbar.setTitle(R.string.app_name);
 
-
         toolbar.inflateMenu(R.menu.project_list_fragment_menu);
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            // can't change project path on android R
-            toolbar.getMenu().removeItem(R.id.projects_path);
-        }
+
         toolbar.setOnMenuItemClickListener(item -> {
             int id = item.getItemId();
 
             if (id == R.id.projects_path) {
-                checkSavePath();
-                return true;
-            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            // روی اندروید ۱۱ و بالاتر، SAF را باز کن تا کاربر پوشه پروژه را انتخاب کند
+            selectProjectFolderWithSAF();
+        } else {
+            checkSavePath(); // برای نسخه‌های پایین‌تر همان عملکرد قبلی
+        }
+        return true;
+    }
 
-            if (id == R.id.menu_settings) {
-                Intent intent = new Intent();
-                intent.setClass(requireActivity(), SettingsActivity.class);
-                startActivity(intent);
-                return true;
-            }
+    if (id == R.id.menu_settings) {
+        Intent intent = new Intent();
+        intent.setClass(requireActivity(), SettingsActivity.class);
+        startActivity(intent);
+        return true;
+    }
 
-            return true;
-        });
+    return true;
+});
 
 
         mCreateProjectFab = view.findViewById(R.id.create_project_fab);
@@ -152,6 +155,29 @@ public class ProjectManagerFragment extends Fragment {
         mRecyclerView.setLayoutManager(new LinearLayoutManager(requireContext()));
         mRecyclerView.setAdapter(mAdapter);
     }
+
+    private void selectProjectFolderWithSAF() {
+    Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE);
+    intent.addFlags(Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION | Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
+    startActivityForResult(intent, REQUEST_CODE_OPEN_DOCUMENT_TREE);
+    }
+
+    @Override
+        public void onActivityResult(int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode == REQUEST_CODE_OPEN_DOCUMENT_TREE && resultCode == Activity.RESULT_OK) {
+        if (data != null) {
+            mProjectRootUri = data.getData();
+            requireActivity().getContentResolver().takePersistableUriPermission(
+                mProjectRootUri,
+                Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+            );
+            // ذخیره URI در SharedPreferences
+            mPreferences.edit().putString(SharedPreferenceKeys.PROJECT_SAVE_PATH, mProjectRootUri.toString()).apply();
+            loadProjects();
+        }
+    }
+}
 
     private boolean inflateProjectMenus(View view, Project project) {
         view.setOnCreateContextMenuListener((menu, v, menuInfo) -> {
@@ -213,23 +239,30 @@ public class ProjectManagerFragment extends Fragment {
     }
 
     private void checkSavePath() {
-        String path = mPreferences.getString(SharedPreferenceKeys.PROJECT_SAVE_PATH, null);
-        if (path == null && Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
+    String path = mPreferences.getString(SharedPreferenceKeys.PROJECT_SAVE_PATH, null);
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+        if (path == null) {
+            selectProjectFolderWithSAF();
+        } else {
+            mProjectRootUri = Uri.parse(path);
+            loadProjects();
+        }
+    } else {
+        // کد قبلی برای اندروید پایین‌تر از ۱۱
+        if (path == null) {
             if (permissionsGranted()) {
                 showDirectorySelectDialog();
             } else if (shouldShowRequestPermissionRationale()) {
-                if (shouldShowRequestPermissionRationale()) {
-                    new MaterialAlertDialogBuilder(requireContext())
-                            .setMessage(R.string.project_manager_permission_rationale)
-                            .setPositiveButton(R.string.project_manager_button_allow, (d, which) -> {
-                                mShowDialogOnPermissionGrant = true;
-                                requestPermissions();
-                            })
-                            .setNegativeButton(R.string.project_manager_button_use_internal, (d, which) ->
-                                    setSavePath(Environment.getExternalStorageDirectory().getAbsolutePath()))
-                            .setTitle(R.string.project_manager_rationale_title)
-                            .show();
-                }
+                new MaterialAlertDialogBuilder(requireContext())
+                        .setMessage(R.string.project_manager_permission_rationale)
+                        .setPositiveButton(R.string.project_manager_button_allow, (d, which) -> {
+                            mShowDialogOnPermissionGrant = true;
+                            requestPermissions();
+                        })
+                        .setNegativeButton(R.string.project_manager_button_use_internal, (d, which) ->
+                                setSavePath(Environment.getExternalStorageDirectory().getAbsolutePath()))
+                        .setTitle(R.string.project_manager_rationale_title)
+                        .show();
             } else {
                 requestPermissions();
             }
@@ -237,6 +270,7 @@ public class ProjectManagerFragment extends Fragment {
             loadProjects();
         }
     }
+}
 
     private void setSavePath(String path) {
         mPreferences.edit()
@@ -305,19 +339,41 @@ public class ProjectManagerFragment extends Fragment {
     }
 
     private void loadProjects() {
-        toggleLoading(true);
+    toggleLoading(true);
 
-        Executors.newSingleThreadExecutor().execute(() -> {
-            String defaultPath = Environment.getExternalStorageDirectory().getAbsolutePath() + "/Documents/CodeAssistProjects";
+    Executors.newSingleThreadExecutor().execute(() -> {
+        List<Project> projects = new ArrayList<>();
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            path = defaultPath;
+            String uriString = mPreferences.getString(SharedPreferenceKeys.PROJECT_SAVE_PATH, null);
+            if (uriString != null) {
+                Uri rootUri = Uri.parse(uriString);
+                DocumentFile rootDir = DocumentFile.fromTreeUri(requireContext(), rootUri);
+                if (rootDir != null && rootDir.isDirectory()) {
+                    DocumentFile[] directories = rootDir.listFiles();
+                    Arrays.sort(directories, (a, b) -> {
+                        long diff = b.lastModified() - a.lastModified();
+                        return diff > 0 ? 1 : (diff < 0 ? -1 : 0);
+                    });
+                    for (DocumentFile dir : directories) {
+                        if (dir.isDirectory()) {
+                            DocumentFile appModule = dir.findFile("app");
+                            if (appModule != null && appModule.isDirectory()) {
+                                // تبدیل DocumentFile به File (برای سازگاری با Project)
+                                File tempFile = new File(dir.getUri().toString());
+                                Project project = new Project(tempFile);
+                                projects.add(project);
+                            }
+                        }
+                    }
+                }
+            }
         } else {
+            String path;
+            String defaultPath = Environment.getExternalStorageDirectory().getAbsolutePath() + "/Documents/CodeAssistProjects";
             path = mPreferences.getString(SharedPreferenceKeys.PROJECT_SAVE_PATH, defaultPath);
-        }
             File projectDir = new File(path);
             File[] directories = projectDir.listFiles(File::isDirectory);
 
-            List<Project> projects = new ArrayList<>();
             if (directories != null) {
                 Arrays.sort(directories, Comparator.comparingLong(File::lastModified));
                 for (File directory : directories) {
@@ -325,24 +381,23 @@ public class ProjectManagerFragment extends Fragment {
                     if (appModule.exists()) {
                         Project project = new Project(new File(directory.getAbsolutePath()
                                 .replaceAll("%20", " ")));
-                        // if (project.isValidProject()) {
                         projects.add(project);
-                        // }
                     }
                 }
             }
+        }
 
-            if (getActivity() != null) {
-                requireActivity().runOnUiThread(() -> {
-                    toggleLoading(false);
-                    ProgressManager.getInstance().runLater(() -> {
-                        mAdapter.submitList(projects);
-                        toggleNullProject(projects);
-                    }, 300);
-                });
-            }
-        });
-    }
+        if (getActivity() != null) {
+            requireActivity().runOnUiThread(() -> {
+                toggleLoading(false);
+                ProgressManager.getInstance().runLater(() -> {
+                    mAdapter.submitList(projects);
+                    toggleNullProject(projects);
+                }, 300);
+            });
+        }
+    });
+}
 
     private void toggleNullProject(List<Project> projects) {
         ProgressManager.getInstance().runLater(() -> {
