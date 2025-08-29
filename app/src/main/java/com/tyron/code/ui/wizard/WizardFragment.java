@@ -2,8 +2,13 @@ package com.tyron.code.ui.wizard;
 
 import android.Manifest;
 import android.annotation.SuppressLint;
+import android.app.Activity;
+import android.content.ContentResolver;
+import android.content.Intent;
+import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.graphics.Color;
+import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
@@ -27,6 +32,7 @@ import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 import androidx.annotation.WorkerThread;
 import androidx.core.content.ContextCompat;
+import androidx.documentfile.provider.DocumentFile;
 import androidx.fragment.app.Fragment;
 import androidx.preference.PreferenceManager;
 import androidx.recyclerview.widget.GridLayoutManager;
@@ -53,11 +59,13 @@ import com.tyron.common.util.SingleTextWatcher;
 import com.tyron.completion.progress.ProgressManager;
 
 import org.apache.commons.io.FileUtils;
+
 import javax.lang.model.SourceVersion;
 
 import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.OutputStream;
 import java.lang.reflect.Field;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
@@ -88,6 +96,8 @@ public class WizardFragment extends Fragment {
     private boolean mUseInternalStorage = Build.VERSION.SDK_INT >= Build.VERSION_CODES.R;
 
     private WizardTemplate mCurrentTemplate;
+
+    private Uri mProjectRootUri; // SAF - مسیر پروژه در حالت عمومی
 
     private final OnBackPressedCallback onBackPressedCallback = new OnBackPressedCallback(true) {
         @Override
@@ -120,6 +130,8 @@ public class WizardFragment extends Fragment {
                 if (mShowDialogOnPermissionGrant) {
                     mShowDialogOnPermissionGrant = false;
                     showDirectoryPickerDialog();
+                } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                    selectProjectFolderWithSAF();
                 }
             }
         });
@@ -185,7 +197,6 @@ public class WizardFragment extends Fragment {
             mLast = false;
         }
     }
-
 
     private void onNavigateNext(View view) {
         if (!mLast) {
@@ -291,32 +302,45 @@ public class WizardFragment extends Fragment {
             mSaveLocationLayout.getEditText().setText(Environment.getExternalStorageDirectory().getAbsolutePath() + "/Documents/CodeAssistProjects");
             mSaveLocationLayout.getEditText().setInputType(InputType.TYPE_NULL);
         }
-//        mSaveLocationLayout.setEndIconOnClickListener(view -> {
-//            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
-//                if (isGrantedStoragePermission()) {
-//                    showDirectoryPickerDialog();
-//                } else if (shouldShowRequestPermissionRationale()) {
-//                    new MaterialAlertDialogBuilder(view.getContext())
-//                            .setMessage("The application needs storage permissions in order to save project files that " +
-//                                    "will not be deleted when you uninstall the app. Alternatively you can choose to " +
-//                                    "save project files into the app's internal storage.")
-//                            .setPositiveButton("Allow", (d, which) -> {
-//                                mShowDialogOnPermissionGrant = true;
-//                                requestPermissions();
-//                            })
-//                            .setNegativeButton("Use internal storage", (d, which) -> {
-//                                mUseInternalStorage = true;
-//                                initializeSaveLocation();
-//                            })
-//                            .setTitle("Storage permissions")
-//                            .show();
-//                } else {
-//                    mShowDialogOnPermissionGrant = true;
-//                    requestPermissions();
-//                }
-//            }
-//        });
     }
+
+    // ------------------ SAF PART ------------------
+
+    private static final int REQUEST_CODE_OPEN_DOCUMENT_TREE = 2002;
+
+    private void selectProjectFolderWithSAF() {
+        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE);
+        intent.addFlags(Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION |
+                        Intent.FLAG_GRANT_READ_URI_PERMISSION |
+                        Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
+        startActivityForResult(intent, REQUEST_CODE_OPEN_DOCUMENT_TREE);
+    }
+
+    @Override
+    public void onActivityResult(int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode == REQUEST_CODE_OPEN_DOCUMENT_TREE && resultCode == Activity.RESULT_OK) {
+            if (data != null) {
+                mProjectRootUri = data.getData();
+                requireActivity().getContentResolver().takePersistableUriPermission(
+                        mProjectRootUri,
+                        Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+                );
+                DocumentFile rootDir = DocumentFile.fromTreeUri(requireContext(), mProjectRootUri);
+                DocumentFile balochScriptDir = rootDir.findFile("BalochScript");
+                if (balochScriptDir == null) {
+                    balochScriptDir = rootDir.createDirectory("BalochScript");
+                }
+                // ذخیره مسیر پوشه‌ی مخصوص پروژه
+                PreferenceManager.getDefaultSharedPreferences(requireContext())
+                        .edit().putString(SharedPreferenceKeys.PROJECT_SAVE_PATH, balochScriptDir.getUri().toString()).apply();
+                mProjectRootUri = balochScriptDir.getUri();
+                initializeSaveLocation();
+            }
+        }
+    }
+
+    // ------------------ END SAF PART ------------------
 
     @SuppressLint("SetTextI18n")
     private void showDirectoryPickerDialog() {
@@ -329,12 +353,9 @@ public class WizardFragment extends Fragment {
         FilePickerDialog dialog = new FilePickerDialog(requireContext(), properties);
         dialog.setDialogSelectionListener(files -> {
             String file = files[0];
-            mSaveLocationLayout.getEditText()
-                    .setText(file);
+            mSaveLocationLayout.getEditText().setText(file);
         });
         dialog.setOnShowListener((d) -> {
-            // work around to set the color of the dialog buttons to white since the color
-            // accent of the app is orange
             Button cancel = dialog.findViewById(com.github.angads25.filepicker.R.id.cancel);
             Button select = dialog.findViewById(com.github.angads25.filepicker.R.id.select);
 
@@ -366,33 +387,16 @@ public class WizardFragment extends Fragment {
     }
 
     private boolean validateDetails() {
-
         requireActivity().runOnUiThread(() -> {
             verifyPackageName(mPackageNameLayout.getEditText().getText());
             verifyClassName(mNameLayout.getEditText().getText());
             verifySaveLocation(mSaveLocationLayout.getEditText().getText());
         });
 
-        if (mPackageNameLayout.isErrorEnabled()) {
-            return false;
-        }
-
-        if (mSaveLocationLayout.isErrorEnabled()) {
-            return false;
-        }
-
-        if (mPackageNameLayout.isErrorEnabled()) {
-            return false;
-        }
-
-        if (mMinSdkLayout.isErrorEnabled()) {
-            return false;
-        }
-
-        if (TextUtils.isEmpty(mMinSdkText.getText())) {
-            return false;
-        }
-
+        if (mPackageNameLayout.isErrorEnabled()) return false;
+        if (mSaveLocationLayout.isErrorEnabled()) return false;
+        if (mMinSdkLayout.isErrorEnabled()) return false;
+        if (TextUtils.isEmpty(mMinSdkText.getText())) return false;
         return mCurrentTemplate != null;
     }
 
@@ -468,17 +472,26 @@ public class WizardFragment extends Fragment {
         mLoadingLayout.setVisibility(View.VISIBLE);
 
         ProgressManager.getInstance().runNonCancelableAsync(() -> {
-            String savePath = mSaveLocationLayout.getEditText().getText().toString();
-
             try {
                 if (validateDetails()) {
-                    createProject();
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                        createProjectSAF();
+                    } else {
+                        createProjectFile();
+                    }
                 } else {
                     requireActivity().runOnUiThread(this::showDetailsView);
                     return;
                 }
 
-                Project project = new Project(new File(savePath));
+                Project project;
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                    File dummy = new File(mProjectRootUri.toString());
+                    project = new Project(dummy);
+                } else {
+                    String savePath = mSaveLocationLayout.getEditText().getText().toString();
+                    project = new Project(new File(savePath));
+                }
                 replacePlaceholders(project.getRootFile());
 
                 if (getActivity() != null && mListener != null) {
@@ -497,62 +510,52 @@ public class WizardFragment extends Fragment {
     }
 
     /**
-     * Traverses all files in a directory, including subdirectory and replaces
-     * placeholders with the right text.
-     *
-     * @param file Root directory to start
+     * ساخت پروژه با SAF در مسیر عمومی (اندروید ۱۱+)
      */
     @WorkerThread
-    private void replacePlaceholders(File file) throws IOException {
-        File[] files = file.listFiles();
-        if (files != null) {
-            for (File child : files) {
-                if (child.isDirectory()) {
-                    replacePlaceholders(child);
-                    continue;
-                }
-                if (child.getName().endsWith(".gradle")) {
-                    replacePlaceholder(child);
-                } else if (child.getName().endsWith(".java") || child.getName().endsWith(".kt")) {
-                    replacePlaceholder(child);
-                } else if (child.getName().endsWith(".xml")) {
-                    replacePlaceholder(child);
-                }
-            }
+    private void createProjectSAF() throws IOException {
+        ContentResolver resolver = requireContext().getContentResolver();
+        DocumentFile balochScriptDir = DocumentFile.fromTreeUri(requireContext(), mProjectRootUri);
+        if (balochScriptDir == null || !balochScriptDir.isDirectory()) {
+            throw new IOException("Unable to access BalochScript directory");
         }
+        String projectName = mNameLayout.getEditText().getText().toString();
+        DocumentFile projectDir = balochScriptDir.createDirectory(projectName);
+        if (projectDir == null) {
+            throw new IOException("Unable to create project directory");
+        }
+        DocumentFile appDir = projectDir.createDirectory("app");
+        DocumentFile srcDir = appDir.createDirectory("src");
+        DocumentFile mainDir = srcDir.createDirectory("main");
+        DocumentFile javaDir = mainDir.createDirectory("java");
+
+        String packageNameDir = mPackageNameLayout.getEditText().getText().toString().replace(".", "/");
+        String[] packageParts = packageNameDir.split("/");
+        DocumentFile currentDir = javaDir;
+        for (String part : packageParts) {
+            DocumentFile next = currentDir.findFile(part);
+            if (next == null) {
+                next = currentDir.createDirectory(part);
+            }
+            currentDir = next;
+        }
+
+        // نمونه ساخت فایل Main.java
+        String className = "Main";
+        String code = "package " + mPackageNameLayout.getEditText().getText().toString() + ";\n\npublic class Main {\n    public static void main(String[] args) {\n        // TODO: Implement\n    }\n}";
+        DocumentFile mainJavaFile = currentDir.createFile("text/plain", className + ".java");
+        try (OutputStream os = resolver.openOutputStream(mainJavaFile.getUri())) {
+            os.write(code.getBytes(StandardCharsets.UTF_8));
+        }
+
+        // اگر فایل‌های دیگر یا منابع قالب داری، همینجا بساز و بنویس با همین روش
     }
 
     /**
-     * Replaces the placeholders in a file such as $packagename, $appname
-     *
-     * @param file Input file
+     * ساخت پروژه با File (اندروید ۱۰ و پایین‌تر)
      */
     @WorkerThread
-    private void replacePlaceholder(File file) throws IOException {
-        String string;
-        try {
-            string = FileUtils.readFileToString(file, Charset.defaultCharset());
-        } catch (IOException e) {
-            return;
-        }
-        String targetSdk = "31";
-        String minSdk = mMinSdkText.getText().toString()
-                .substring("API".length() + 1, "API".length() + 3); // at least 2 digits
-        int minSdkInt = Integer.parseInt(minSdk);
-
-        FileUtils.writeStringToFile(
-                file,
-                string.replace("$packagename", mPackageNameLayout.getEditText().getText())
-                        .replace("$appname", mNameLayout.getEditText().getText())
-                        .replace("${targetSdkVersion}", targetSdk)
-                        .replace("${minSdkVersion}", String.valueOf(minSdkInt)),
-                StandardCharsets.UTF_8
-        );
-    }
-
-    @WorkerThread
-    private void createProject() throws IOException {
-
+    private void createProjectFile() throws IOException {
         File projectRoot = new File(mSaveLocationLayout.getEditText().getText().toString());
         if (!projectRoot.exists()) {
             if (!projectRoot.mkdirs()) {
@@ -580,6 +583,49 @@ public class WizardFragment extends Fragment {
         FileUtils.deleteDirectory(new File(projectRoot, "app/src/main/java/$packagename"));
         FileUtils.copyDirectory(new File(sourcesDir,
                 "app/src/main/java/$packagename"), targetSourceDir);
+    }
+
+    @WorkerThread
+    private void replacePlaceholders(File file) throws IOException {
+        File[] files = file.listFiles();
+        if (files != null) {
+            for (File child : files) {
+                if (child.isDirectory()) {
+                    replacePlaceholders(child);
+                    continue;
+                }
+                if (child.getName().endsWith(".gradle")) {
+                    replacePlaceholder(child);
+                } else if (child.getName().endsWith(".java") || child.getName().endsWith(".kt")) {
+                    replacePlaceholder(child);
+                } else if (child.getName().endsWith(".xml")) {
+                    replacePlaceholder(child);
+                }
+            }
+        }
+    }
+
+    @WorkerThread
+    private void replacePlaceholder(File file) throws IOException {
+        String string;
+        try {
+            string = FileUtils.readFileToString(file, Charset.defaultCharset());
+        } catch (IOException e) {
+            return;
+        }
+        String targetSdk = "31";
+        String minSdk = mMinSdkText.getText().toString()
+                .substring("API".length() + 1, "API".length() + 3); // at least 2 digits
+        int minSdkInt = Integer.parseInt(minSdk);
+
+        FileUtils.writeStringToFile(
+                file,
+                string.replace("$packagename", mPackageNameLayout.getEditText().getText())
+                        .replace("$appname", mNameLayout.getEditText().getText())
+                        .replace("${targetSdkVersion}", targetSdk)
+                        .replace("${minSdkVersion}", String.valueOf(minSdkInt)),
+                StandardCharsets.UTF_8
+        );
     }
 
     private List<String> getSdks() {
@@ -646,7 +692,6 @@ public class WizardFragment extends Fragment {
                     mRecyclerView.setVisibility(View.VISIBLE);
 
                     mAdapter.submitList(templates);
-
 
                     mAdapter.setOnItemClickListener((item, pos) -> {
                         mCurrentTemplate = item;
