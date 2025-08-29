@@ -1,9 +1,13 @@
 package com.tyron.code.ui.project;
 
+import android.content.ContentResolver;
+import android.content.Context;
+import android.net.Uri;
 import android.text.TextUtils;
 
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
+import androidx.documentfile.provider.DocumentFile;
 
 import com.google.common.base.Charsets;
 import com.google.common.base.Throwables;
@@ -387,6 +391,7 @@ public class ProjectManager {
         return mCurrentProject;
     }
 
+    // ========== ساخت فایل و کلاس به روش قدیمی (File) ==========
     public static File createFile(File directory,
                                   String name,
                                   CodeTemplate template) throws IOException {
@@ -435,5 +440,78 @@ public class ProjectManager {
 
         FileUtils.writeStringToFile(classFile, code, Charsets.UTF_8);
         return classFile;
+    }
+
+    // ========== ساخت فایل و کلاس با SAF (اندروید ۱۱+) ==========
+    @Nullable
+    public static DocumentFile createFileSAF(Context context, Uri directoryUri, String name, CodeTemplate template) {
+        DocumentFile dir = DocumentFile.fromTreeUri(context, directoryUri);
+        if (dir == null || !dir.isDirectory()) {
+            return null;
+        }
+        String code = template.get().replace(CodeTemplate.CLASS_NAME, name);
+        String fileName = name + template.getExtension();
+
+        DocumentFile existing = dir.findFile(fileName);
+        if (existing != null) {
+            return null;
+        }
+        DocumentFile file = dir.createFile("text/plain", fileName);
+        if (file == null) {
+            return null;
+        }
+        try {
+            ContentResolver resolver = context.getContentResolver();
+            try (java.io.OutputStream os = resolver.openOutputStream(file.getUri())) {
+                if (os != null) {
+                    os.write(code.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                    os.flush();
+                }
+            }
+        } catch (Exception e) {
+            e.printStackTrace();
+            return null;
+        }
+        return file;
+    }
+
+    @Nullable
+    public static DocumentFile createClassSAF(Context context, Uri directoryUri, String className, CodeTemplate template) {
+        DocumentFile dir = DocumentFile.fromTreeUri(context, directoryUri);
+        if (dir == null || !dir.isDirectory()) {
+            return null;
+        }
+        String packageName = ProjectUtils.getPackageNameSAF(context, dir);
+        if (packageName == null) {
+            return null;
+        }
+
+        String code = template.get()
+                .replace(CodeTemplate.PACKAGE_NAME, packageName)
+                .replace(CodeTemplate.CLASS_NAME, className);
+
+        String fileName = className + template.getExtension();
+
+        DocumentFile existing = dir.findFile(fileName);
+        if (existing != null) {
+            return null;
+        }
+        DocumentFile file = dir.createFile("text/plain", fileName);
+        if (file == null) {
+            return null;
+        }
+        try {
+            ContentResolver resolver = context.getContentResolver();
+            try (java.io.OutputStream os = resolver.openOutputStream(file.getUri())) {
+                if (os != null) {
+                    os.write(code.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                    os.flush();
+                }
+            }
+        } catch (Exception e) {
+            e.printStackTrace();
+            return null;
+        }
+        return file;
     }
 }
