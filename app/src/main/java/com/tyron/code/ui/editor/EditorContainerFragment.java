@@ -2,6 +2,7 @@ package com.tyron.code.ui.editor;
 
 import android.content.Context;
 import android.content.SharedPreferences;
+import android.net.Uri;
 import android.os.Bundle;
 import android.view.LayoutInflater;
 import android.view.View;
@@ -53,11 +54,15 @@ import org.apache.commons.vfs2.FileSystemException;
 import org.apache.commons.vfs2.VFS;
 
 import java.io.File;
+import java.io.InputStream;
+import java.io.OutputStream;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Objects;
 import java.util.stream.Collectors;
+
+import androidx.documentfile.provider.DocumentFile;
 
 public class EditorContainerFragment extends Fragment implements
         ProjectManager.OnProjectOpenListener, SharedPreferences.OnSharedPreferenceChangeListener {
@@ -108,7 +113,6 @@ public class EditorContainerFragment extends Fragment implements
     public View onCreateView(@NonNull LayoutInflater inflater,
                              @Nullable ViewGroup container,
                              @Nullable Bundle savedInstanceState) {
-        // safe cast, getContext() ensures it returns a DataContext
         DataContext dataContext = (DataContext) requireContext();
         dataContext.putData(CommonDataKeys.PROJECT,
                 ProjectManager.getInstance().getCurrentProject());
@@ -130,7 +134,8 @@ public class EditorContainerFragment extends Fragment implements
                 FileEditor currentFileEditor = mMainViewModel.getCurrentFileEditor();
                 if (currentFileEditor instanceof TextEditor) {
                     FileDocumentManager instance = FileDocumentManager.getInstance();
-                    instance.saveContent(((TextEditor) currentFileEditor).getContent());
+                    // --- تغییر برای پشتیبانی SAF ---
+                    saveEditorContent(currentFileEditor);
                 }
             }
 
@@ -337,5 +342,68 @@ public class EditorContainerFragment extends Fragment implements
             mDataContext = new DataContext(originalContext);
         }
         return mDataContext;
+    }
+
+    // ----------- این متد را اضافه کن برای ذخیره محتوا با SAF یا File -----------
+
+    private void saveEditorContent(FileEditor fileEditor) {
+        if (!(fileEditor instanceof TextEditor)) return;
+
+        Content content = ((TextEditor) fileEditor).getContent();
+        if (content == null) return;
+        String code = content.getText();
+
+        File file = fileEditor.getFile();
+        if (file == null) return;
+
+        // اگر پروژه با SAF ساخته شده (مسیر پروژه عمومی)، با SAF ذخیره کن
+        String projectUriStr = ApplicationLoader.getDefaultPreferences()
+                .getString("project_root_uri", null);
+        if (projectUriStr != null && isPublicProject(file)) {
+            Uri projectRootUri = Uri.parse(projectUriStr);
+            DocumentFile rootDir = DocumentFile.fromTreeUri(requireContext(), projectRootUri);
+            if (rootDir != null) {
+                // پیدا کردن فایل مناسب
+                DocumentFile targetFile = findDocumentFile(rootDir, file.getName());
+                if (targetFile != null) {
+                    try (OutputStream os = requireContext().getContentResolver().openOutputStream(targetFile.getUri(), "rwt")) {
+                        os.write(code.getBytes());
+                        os.flush();
+                    } catch (Exception e) {
+                        e.printStackTrace();
+                    }
+                }
+            }
+        } else {
+            // حالت قدیمی با File
+            try (java.io.FileWriter writer = new java.io.FileWriter(file, false)) {
+                writer.write(code);
+                writer.flush();
+            } catch (Exception e) {
+                e.printStackTrace();
+            }
+        }
+    }
+
+    // ----------- Utility برای پیدا کردن فایل مورد نظر در DocumentFile ها -----------
+
+    private DocumentFile findDocumentFile(DocumentFile dir, String fileName) {
+        for (DocumentFile file : dir.listFiles()) {
+            if (file.getName() != null && file.getName().equals(fileName)) {
+                return file;
+            }
+            if (file.isDirectory()) {
+                DocumentFile found = findDocumentFile(file, fileName);
+                if (found != null) return found;
+            }
+        }
+        return null;
+    }
+
+    // ----------- Utility برای تشخیص مسیر عمومی پروژه -----------
+
+    private boolean isPublicProject(File file) {
+        String path = file.getAbsolutePath();
+        return path.contains("/storage/emulated/0/BalochScript");
     }
 }
