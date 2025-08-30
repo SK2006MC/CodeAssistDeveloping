@@ -1,11 +1,12 @@
 package com.tyron.code.ui.editor.impl.text.rosemoe;
 
-
 import static io.github.rosemoe.sora2.text.EditorUtil.getDefaultColorScheme;
 
 import android.annotation.SuppressLint;
+import android.content.Context;
 import android.content.SharedPreferences;
 import android.graphics.Color;
+import android.net.Uri;
 import android.os.Bundle;
 import android.view.Gravity;
 import android.view.MotionEvent;
@@ -71,8 +72,11 @@ import org.apache.commons.vfs2.FileObject;
 import org.apache.commons.vfs2.FileSystemManager;
 import org.apache.commons.vfs2.VFS;
 
+import java.io.BufferedReader;
 import java.io.File;
 import java.io.IOException;
+import java.io.InputStreamReader;
+import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.Optional;
 import java.util.concurrent.Executors;
@@ -100,7 +104,9 @@ public class CodeEditorFragment extends Fragment implements Savable,
     public static final String KEY_LINE = "line";
     public static final String KEY_COLUMN = "column";
     public static final String KEY_PATH = "path";
+    public static final String KEY_URI = "uri";
 
+    // Constructors for File and for SAF/Uri support
     public static CodeEditorFragment newInstance(File file) {
         CodeEditorFragment fragment = new CodeEditorFragment();
         Bundle args = new Bundle();
@@ -109,15 +115,6 @@ public class CodeEditorFragment extends Fragment implements Savable,
         return fragment;
     }
 
-    /**
-     * Creates a new instance of the editor with the the cursor positioned at the given
-     * line and column
-     *
-     * @param file   The file to be r ead
-     * @param line   The 0-based line
-     * @param column The 0-based column
-     * @return The editor instance
-     */
     public static CodeEditorFragment newInstance(File file, int line, int column) {
         CodeEditorFragment fragment = new CodeEditorFragment();
         Bundle args = new Bundle();
@@ -128,25 +125,37 @@ public class CodeEditorFragment extends Fragment implements Savable,
         return fragment;
     }
 
-    /**
-     * Keys for saved states
-     */
+    public static CodeEditorFragment newInstance(Uri uri) {
+        CodeEditorFragment fragment = new CodeEditorFragment();
+        Bundle args = new Bundle();
+        args.putParcelable(KEY_URI, uri);
+        fragment.setArguments(args);
+        return fragment;
+    }
+
+    public static CodeEditorFragment newInstance(Uri uri, int line, int column) {
+        CodeEditorFragment fragment = new CodeEditorFragment();
+        Bundle args = new Bundle();
+        args.putInt(KEY_LINE, line);
+        args.putInt(KEY_COLUMN, column);
+        args.putParcelable(KEY_URI, uri);
+        fragment.setArguments(args);
+        return fragment;
+    }
+
     private static final String EDITOR_LEFT_LINE_KEY = "line";
     private static final String EDITOR_LEFT_COLUMN_KEY = "column";
     private static final String EDITOR_RIGHT_LINE_KEY = "rightLine";
     private static final String EDITOR_RIGHT_COLUMN_KEY = "rightColumn";
 
     private CodeEditorView mEditor;
-
     private Language mLanguage;
-    private File mCurrentFile = new File("");
+    private File mCurrentFile = null;
+    private Uri mCurrentUri = null;
     private MainViewModel mMainViewModel;
-
     private Bundle mSavedInstanceState;
-
     private boolean mCanSave = false;
     private boolean mReading = false;
-
     private View.OnTouchListener mDragToOpenListener;
 
     public CodeEditorFragment() {
@@ -156,7 +165,16 @@ public class CodeEditorFragment extends Fragment implements Savable,
     @Override
     public void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        mCurrentFile = new File(requireArguments().getString(KEY_PATH, ""));
+        Bundle args = getArguments();
+        if (args != null) {
+            if (args.containsKey(KEY_PATH)) {
+                mCurrentFile = new File(args.getString(KEY_PATH, ""));
+                mCurrentUri = null;
+            } else if (args.containsKey(KEY_URI)) {
+                mCurrentUri = args.getParcelable(KEY_URI);
+                mCurrentFile = null;
+            }
+        }
         mMainViewModel = new ViewModelProvider(requireActivity()).get(MainViewModel.class);
         mSavedInstanceState = savedInstanceState;
     }
@@ -181,14 +199,6 @@ public class CodeEditorFragment extends Fragment implements Savable,
         mEditor.hideAutoCompleteWindow();
     }
 
-    /**
-     * Return the {@link EditorColorScheme} from the specified path.
-     * If the path is null or does not exist, the default color scheme is returned
-     * depending on the state of the device's theme
-     *
-     * @param path The file path to color scheme json file
-     * @return The color scheme instance
-     */
     @NonNull
     private ListenableFuture<TextMateColorScheme> getScheme(@Nullable String path) {
         if (path != null && new File(path).exists()) {
@@ -233,7 +243,7 @@ public class CodeEditorFragment extends Fragment implements Savable,
             if (scheme != null) {
                 mEditor.setColorScheme(scheme);
                 initializeLanguage();
-                mEditor.openFile(mCurrentFile);
+                openCurrentFile();
                 readOrWait();
             }
         } else {
@@ -249,7 +259,7 @@ public class CodeEditorFragment extends Fragment implements Savable,
                     mEditor.setColorScheme(result);
 
                     initializeLanguage();
-                    mEditor.openFile(mCurrentFile);
+                    openCurrentFile();
                     readOrWait();
                 }
 
@@ -268,7 +278,7 @@ public class CodeEditorFragment extends Fragment implements Savable,
                     }
                     mEditor.setColorScheme(scheme);
                     initializeLanguage();
-                    mEditor.openFile(mCurrentFile);
+                    openCurrentFile();
                     readOrWait();
                 }
             }, ContextCompat.getMainExecutor(requireContext()));
@@ -276,7 +286,11 @@ public class CodeEditorFragment extends Fragment implements Savable,
     }
 
     private void initializeLanguage() {
-        mLanguage = LanguageManager.getInstance().get(mEditor, mCurrentFile);
+        if (mCurrentFile != null) {
+            mLanguage = LanguageManager.getInstance().get(mEditor, mCurrentFile);
+        } else if (mCurrentUri != null) {
+            mLanguage = LanguageManager.getInstance().get(mEditor, mCurrentUri);
+        }
         if (mLanguage == null) {
             mLanguage = new EmptyTextMateLanguage();
         }
@@ -284,8 +298,6 @@ public class CodeEditorFragment extends Fragment implements Savable,
     }
 
     private void configureEditor(@NonNull CodeEditorView editor) {
-        // do not allow the user to edit, since at the time this is called
-        // the contents may still be loading.
         editor.setEditable(false);
         editor.setColorScheme(new CompiledEditorScheme(requireContext()));
         editor.setBackgroundAnalysisEnabled(false);
@@ -295,7 +307,7 @@ public class CodeEditorFragment extends Fragment implements Savable,
         editor.setLigatureEnabled(true);
         editor.setHighlightCurrentBlock(true);
         editor.setEdgeEffectColor(Color.TRANSPARENT);
-        editor.openFile(mCurrentFile);
+        openCurrentFile();
         editor.setAutoCompletionItemAdapter(new CodeAssistCompletionAdapter());
         editor.setImportantForAutofill(View.IMPORTANT_FOR_AUTOFILL_NO);
         editor.setInputType(EditorInfo.TYPE_TEXT_FLAG_NO_SUGGESTIONS |
@@ -313,12 +325,19 @@ public class CodeEditorFragment extends Fragment implements Savable,
         props.deleteEmptyLineFast = pref.getBoolean(SharedPreferenceKeys.DELETE_WHITESPACES, false);
     }
 
+    private void openCurrentFile() {
+        if (mEditor == null) return;
+        if (mCurrentFile != null) {
+            mEditor.openFile(mCurrentFile);
+        } else if (mCurrentUri != null) {
+            mEditor.openFile(mCurrentUri);
+        }
+    }
+
     private void postConfigureEditor() {
-        // noinspection ClickableViewAccessibility
         mEditor.setOnTouchListener((view12, motionEvent) -> {
             if (mDragToOpenListener instanceof ForwardingListener) {
                 PopupMenuHelper.setForwarding((ForwardingListener) mDragToOpenListener);
-                // noinspection RestrictedApi
                 mDragToOpenListener.onTouch(view12, motionEvent);
             }
             return false;
@@ -430,9 +449,6 @@ public class CodeEditorFragment extends Fragment implements Savable,
         }
     }
 
-    /**
-     * Show the popup menu with the actions api
-     */
     private void showPopupMenu(LongPressEvent event) {
         MotionEvent e = event.getCausingEvent();
         CoordinatePopupMenu popupMenu =
@@ -441,10 +457,6 @@ public class CodeEditorFragment extends Fragment implements Savable,
         ActionManager.getInstance()
                 .fillMenu(dataContext, popupMenu.getMenu(), ActionPlaces.EDITOR, true, false);
         popupMenu.show((int) e.getX(), ((int) e.getY()) - AndroidUtilities.dp(24));
-
-        // we don't want to enable the drag to open listener right away,
-        // this may cause the buttons to be clicked right away
-        // so wait for a few ms
         ProgressManager.getInstance().runLater(() -> {
             popupMenu.setOnDismissListener(d -> mDragToOpenListener = null);
             mDragToOpenListener = popupMenu.getDragToOpenListener();
@@ -454,9 +466,8 @@ public class CodeEditorFragment extends Fragment implements Savable,
     @Override
     public void onDestroyView() {
         super.onDestroyView();
-
         Project currentProject = ProjectManager.getInstance().getCurrentProject();
-        if (currentProject != null) {
+        if (currentProject != null && mCurrentFile != null) {
             Module module = currentProject.getModule(mCurrentFile);
             if (module != null) {
                 module.getFileManager().removeSnapshotListener(this);
@@ -469,9 +480,11 @@ public class CodeEditorFragment extends Fragment implements Savable,
     public void onDestroy() {
         super.onDestroy();
         if (ProjectManager.getInstance().getCurrentProject() != null && mCanSave) {
-            ProgressManager.getInstance().runNonCancelableAsync(
-                    () -> ProjectManager.getInstance().getCurrentProject().getModule(mCurrentFile)
-                            .getFileManager().closeFileForSnapshot(mCurrentFile));
+            if (mCurrentFile != null) {
+                ProgressManager.getInstance().runNonCancelableAsync(
+                        () -> ProjectManager.getInstance().getCurrentProject().getModule(mCurrentFile)
+                                .getFileManager().closeFileForSnapshot(mCurrentFile));
+            }
         }
         ApplicationLoader.getDefaultPreferences().unregisterOnSharedPreferenceChangeListener(this);
     }
@@ -479,28 +492,24 @@ public class CodeEditorFragment extends Fragment implements Savable,
     @Override
     public void onPause() {
         super.onPause();
-
         hideEditorWindows();
-
         save(true);
     }
 
     @Override
     public void onLowMemory() {
         super.onLowMemory();
-
         mEditor.setBackgroundAnalysisEnabled(false);
     }
 
     @Override
     public void onSnapshotChanged(File file, CharSequence contents) {
-        if (mCurrentFile.equals(file)) {
+        if (mCurrentFile != null && mCurrentFile.equals(file)) {
             if (mEditor != null) {
                 if (!mEditor.getText().toString().contentEquals(contents)) {
                     Cursor cursor = mEditor.getCursor();
                     int left = cursor.getLeft();
                     mEditor.setText(contents);
-
                     if (left > contents.length()) {
                         left = contents.length();
                     }
@@ -521,27 +530,41 @@ public class CodeEditorFragment extends Fragment implements Savable,
         if (!mCanSave || mReading) {
             return;
         }
-
-        // don't save if the file has been deleted externally but its still opened in the editor,
-        if (!mCurrentFile.exists()) {
-            return;
-        }
-
-        if (ProjectManager.getInstance().getCurrentProject() != null && !toDisk) {
-            ProjectManager.getInstance().getCurrentProject().getModule(mCurrentFile)
-                    .getFileManager()
-                    .setSnapshotContent(mCurrentFile, mEditor.getText().toString(), false);
-        } else {
+        if (mCurrentFile != null) {
+            if (!mCurrentFile.exists()) {
+                return;
+            }
+            if (ProjectManager.getInstance().getCurrentProject() != null && !toDisk) {
+                ProjectManager.getInstance().getCurrentProject().getModule(mCurrentFile)
+                        .getFileManager()
+                        .setSnapshotContent(mCurrentFile, mEditor.getText().toString(), false);
+            } else {
+                ProgressManager.getInstance().runNonCancelableAsync(() -> {
+                    try {
+                        FileUtils.writeStringToFile(mCurrentFile, mEditor.getText().toString(),
+                                StandardCharsets.UTF_8);
+                    } catch (IOException e) {
+                        LOG.severe("Unable to save file: " +
+                                   mCurrentFile.getAbsolutePath() +
+                                   "\n" +
+                                   "Reason: " +
+                                   e.getMessage());
+                    }
+                });
+            }
+        } else if (mCurrentUri != null) {
+            // SAF/Uri: save file using ContentResolver
             ProgressManager.getInstance().runNonCancelableAsync(() -> {
                 try {
-                    FileUtils.writeStringToFile(mCurrentFile, mEditor.getText().toString(),
-                            StandardCharsets.UTF_8);
-                } catch (IOException e) {
-                    LOG.severe("Unable to save file: " +
-                               mCurrentFile.getAbsolutePath() +
-                               "\n" +
-                               "Reason: " +
-                               e.getMessage());
+                    OutputStream outputStream = requireContext().getContentResolver()
+                            .openOutputStream(mCurrentUri, "wt");
+                    if (outputStream != null) {
+                        outputStream.write(mEditor.getText().toString().getBytes(StandardCharsets.UTF_8));
+                        outputStream.flush();
+                        outputStream.close();
+                    }
+                } catch (Exception e) {
+                    LOG.severe("Unable to save file: " + mCurrentUri + "\nReason: " + e.getMessage());
                 }
             });
         }
@@ -552,10 +575,6 @@ public class CodeEditorFragment extends Fragment implements Savable,
         ProgressManager.getInstance().runLater(() -> readFile(project, mSavedInstanceState));
     }
 
-    /**
-     * Read the file immediately if there is a project open. If not, wait for the project
-     * to be opened first.
-     */
     private void readOrWait() {
         if (ProjectManager.getInstance().getCurrentProject() != null) {
             readFile(ProjectManager.getInstance().getCurrentProject(), mSavedInstanceState);
@@ -565,27 +584,42 @@ public class CodeEditorFragment extends Fragment implements Savable,
     }
 
     private ListenableFuture<String> readFile() {
-        return Futures.submitAsync(() -> {
-            FileSystemManager manager = VFS.getManager();
-            FileObject fileObject = manager.resolveFile(mCurrentFile.toURI());
-            FileContent content = fileObject.getContent();
-            return Futures.immediateFuture(content.getString(StandardCharsets.UTF_8));
-        }, Executors.newSingleThreadExecutor());
+        if (mCurrentFile != null) {
+            return Futures.submitAsync(() -> {
+                FileSystemManager manager = VFS.getManager();
+                FileObject fileObject = manager.resolveFile(mCurrentFile.toURI());
+                FileContent content = fileObject.getContent();
+                return Futures.immediateFuture(content.getString(StandardCharsets.UTF_8));
+            }, Executors.newSingleThreadExecutor());
+        } else if (mCurrentUri != null) {
+            return Futures.submitAsync(() -> {
+                StringBuilder builder = new StringBuilder();
+                try (BufferedReader reader = new BufferedReader(new InputStreamReader(
+                        requireContext().getContentResolver().openInputStream(mCurrentUri), StandardCharsets.UTF_8))) {
+                    String line;
+                    while ((line = reader.readLine()) != null) {
+                        builder.append(line).append('\n');
+                    }
+                }
+                return Futures.immediateFuture(builder.toString());
+            }, Executors.newSingleThreadExecutor());
+        } else {
+            return Futures.immediateFailedFuture(new Throwable("No file or uri to read"));
+        }
     }
 
     private void readFile(@NonNull Project currentProject, @Nullable Bundle savedInstanceState) {
         mCanSave = false;
-        Module module = currentProject.getModule(mCurrentFile);
-        FileManager fileManager = module.getFileManager();
-        fileManager.addSnapshotListener(this);
-
-
-        // the file is already opened, so no need to load it.
-        if (fileManager.isOpened(mCurrentFile)) {
-            Optional<CharSequence> contents = fileManager.getFileContent(mCurrentFile);
-            if (contents.isPresent()) {
-                mEditor.setText(contents.get());
-                return;
+        Module module = mCurrentFile != null ? currentProject.getModule(mCurrentFile) : null;
+        FileManager fileManager = module != null ? module.getFileManager() : null;
+        if (fileManager != null) {
+            fileManager.addSnapshotListener(this);
+            if (fileManager.isOpened(mCurrentFile)) {
+                Optional<CharSequence> contents = fileManager.getFileContent(mCurrentFile);
+                if (contents.isPresent()) {
+                    mEditor.setText(contents.get());
+                    return;
+                }
             }
         }
 
@@ -606,7 +640,9 @@ public class CodeEditorFragment extends Fragment implements Savable,
                 mCanSave = true;
                 mEditor.setBackgroundAnalysisEnabled(true);
                 mEditor.setEditable(true);
-                fileManager.openFileForSnapshot(mCurrentFile, result);
+                if (fileManager != null && mCurrentFile != null) {
+                    fileManager.openFileForSnapshot(mCurrentFile, result);
+                }
 
                 Bundle bundle = new Bundle();
                 bundle.putBoolean("loaded", true);
@@ -635,9 +671,8 @@ public class CodeEditorFragment extends Fragment implements Savable,
                 }
 
                 LOG.severe("Unable to read current file: " +
-                           mCurrentFile +
-                           "\n" +
-                           "Reason: " +
+                           (mCurrentFile != null ? mCurrentFile : mCurrentUri) +
+                           "\nReason: " +
                            t.getMessage());
             }
         }, ContextCompat.getMainExecutor(requireContext()));
@@ -647,8 +682,13 @@ public class CodeEditorFragment extends Fragment implements Savable,
         if (!mCanSave) {
             Snackbar snackbar =
                     Snackbar.make(mEditor, R.string.editor_error_file, Snackbar.LENGTH_INDEFINITE)
-                            .setAction(R.string.menu_close, v -> FileEditorManagerImpl.getInstance()
-                                    .closeFile(mCurrentFile));
+                            .setAction(R.string.menu_close, v -> {
+                                if (mCurrentFile != null) {
+                                    FileEditorManagerImpl.getInstance().closeFile(mCurrentFile);
+                                } else if (mCurrentUri != null) {
+                                    FileEditorManagerImpl.getInstance().closeFile(mCurrentUri);
+                                }
+                            });
             ViewGroup snackbarView = (ViewGroup) snackbar.getView();
             AndroidUtilities.setMargins(snackbarView, 0, 0, 0, 50);
             snackbar.show();
@@ -677,22 +717,21 @@ public class CodeEditorFragment extends Fragment implements Savable,
         if (project == null) {
             return;
         }
-        Module module = project.getModule(mCurrentFile);
-        if (module != null) {
-            if (!module.getFileManager().isOpened(mCurrentFile)) {
-                return;
+        if (mCurrentFile != null) {
+            Module module = project.getModule(mCurrentFile);
+            if (module != null) {
+                if (!module.getFileManager().isOpened(mCurrentFile)) {
+                    return;
+                }
+                module.getFileManager().setSnapshotContent(mCurrentFile, contents.toString(), this);
             }
-            module.getFileManager().setSnapshotContent(mCurrentFile, contents.toString(), this);
-        }
+        } // For SAF/Uri (snapshot logic can be extended here if needed)
     }
 
     public CodeEditorView getEditor() {
         return mEditor;
     }
 
-    /**
-     * Undo the text in the editor if possible, if not the call is ignored
-     */
     public void undo() {
         if (mEditor == null) {
             return;
@@ -702,9 +741,6 @@ public class CodeEditorFragment extends Fragment implements Savable,
         }
     }
 
-    /**
-     * Redo the text in the editor if possible, if not the call is ignored
-     */
     public void redo() {
         if (mEditor == null) {
             return;
@@ -714,23 +750,12 @@ public class CodeEditorFragment extends Fragment implements Savable,
         }
     }
 
-    /**
-     * Sets the position of the cursor in the editor
-     *
-     * @param line   zero-based line.
-     * @param column zero-based column.
-     */
     public void setCursorPosition(int line, int column) {
         if (mEditor != null) {
             mEditor.getCursor().set(line, column);
         }
     }
 
-    /**
-     * Perform a shortcut item to the editor
-     *
-     * @param item the item to be performed
-     */
     public void performShortcut(ShortcutItem item) {
         if (mEditor == null) {
             return;
@@ -742,33 +767,16 @@ public class CodeEditorFragment extends Fragment implements Savable,
 
     public void format() {
         if (mEditor != null) {
-//            if (mEditor.getCursor().isSelected()) {
-//                if (mLanguage instanceof JavaLanguage) {
-//                    Cursor cursor = mEditor.getCursor();
-//                    CharSequence format = mLanguage.format(mEditor.getText(), cursor.getLeft(),
-//                            cursor.getRight());
-//                    mEditor.setText(format);
-//                    return;
-//                }
-//            }
             mEditor.formatCodeAsync();
         }
     }
 
-    /**
-     * Notifies the editor to analyze and highlight the current text
-     */
     public void analyze() {
         if (mEditor != null && !mReading) {
             mEditor.rerunAnalysis();
         }
     }
 
-    /**
-     * Create the data context specific to this fragment for use with the actions API.
-     *
-     * @return the data context.
-     */
     private DataContext createDataContext() {
         Project currentProject = ProjectManager.getInstance().getCurrentProject();
 
@@ -776,10 +784,14 @@ public class CodeEditorFragment extends Fragment implements Savable,
         dataContext.putData(CommonDataKeys.PROJECT, currentProject);
         dataContext.putData(CommonDataKeys.ACTIVITY, requireActivity());
         dataContext.putData(CommonDataKeys.FILE_EDITOR_KEY, mMainViewModel.getCurrentFileEditor());
-        dataContext.putData(CommonDataKeys.FILE, mCurrentFile);
+        if (mCurrentFile != null) {
+            dataContext.putData(CommonDataKeys.FILE, mCurrentFile);
+        } else if (mCurrentUri != null) {
+            dataContext.putData(CommonDataKeys.FILE_URI, mCurrentUri);
+        }
         dataContext.putData(CommonDataKeys.EDITOR, mEditor);
 
-        if (currentProject != null && mLanguage instanceof JavaLanguage) {
+        if (currentProject != null && mLanguage instanceof JavaLanguage && mCurrentFile != null) {
             JavaDataContextUtil.addEditorKeys(dataContext, currentProject, mCurrentFile,
                     mEditor.getCursor().getLeft());
         }
