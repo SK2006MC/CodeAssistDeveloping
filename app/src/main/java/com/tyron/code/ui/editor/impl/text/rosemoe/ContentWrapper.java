@@ -13,30 +13,37 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.stream.IntStream;
 
 import io.github.rosemoe.sora.text.CharPosition;
 import io.github.rosemoe.sora.text.Content;
 
+/**
+ * ContentWrapper extends Content and implements com.tyron.editor.Content.
+ * It provides advanced event, modification tracking, and data storage.
+ */
 public class ContentWrapper extends Content implements com.tyron.editor.Content {
 
     private AtomicInteger sequence;
-
     private boolean hasCalledSuper = false;
 
-    public ContentWrapper() {
+    // Modification stamp for tracking changes
+    private long modificationStamp = 0;
 
+    // Thread-safe data map for storing arbitrary key-value pairs
+    private final Map<String, Object> dataMap = Maps.newConcurrentMap();
+
+    // Listeners for text/content changes
+    private final List<ContentListener> contentListeners = new CopyOnWriteArrayList<>();
+
+    public ContentWrapper() {
+        super("", true);
+        hasCalledSuper = true;
     }
 
     public ContentWrapper(CharSequence text) {
         super(text, true);
-
         hasCalledSuper = true;
     }
-
-    private long modificationStamp = 0;
-    private final Map<String, Object> dataMap = Maps.newConcurrentMap();
-    private final List<ContentListener> contentListeners = new CopyOnWriteArrayList<>();
 
     @Override
     public void insert(int index, CharSequence text) {
@@ -48,14 +55,12 @@ public class ContentWrapper extends Content implements com.tyron.editor.Content 
     public void insert(int line, int column, CharSequence text) {
         super.insert(line, column, text);
 
-        if (!hasCalledSuper) {
-            return;
-        }
+        if (!hasCalledSuper) return;
+
         int offset = getCharIndex(line, column);
         Content newText = this;
         CharSequence newString = newText.subSequence(offset, offset + text.length());
-        updateText(newText, offset, "", newString, false, System.currentTimeMillis(), offset, 0,
-                offset);
+        updateText(newText, offset, "", newString, false, System.currentTimeMillis(), offset, 0, offset);
     }
 
     @Override
@@ -74,17 +79,14 @@ public class ContentWrapper extends Content implements com.tyron.editor.Content 
 
     @Override
     public void delete(int startLine, int columnOnStartLine, int endLine, int columnOnEndLine) {
-        // need to get the offset before deleting since the end offset will be invalid
-        // if it has been deleted before
+        // Get offsets before deletion
         int startOffset = getCharIndex(startLine, columnOnStartLine);
         int endOffset = getCharIndex(endLine, columnOnEndLine);
         CharSequence oldString = subSequence(startOffset, endOffset);
 
         super.delete(startLine, columnOnStartLine, endLine, columnOnEndLine);
 
-        if (!hasCalledSuper) {
-            return;
-        }
+        if (!hasCalledSuper) return;
 
         Content newText = this;
         updateText(newText, startOffset, oldString, "", false, System.currentTimeMillis(),
@@ -98,6 +100,9 @@ public class ContentWrapper extends Content implements com.tyron.editor.Content 
         return sequence;
     }
 
+    /**
+     * Update text and notify listeners.
+     */
     protected void updateText(@NonNull CharSequence text,
                               int offset,
                               @NonNull CharSequence oldString,
@@ -108,23 +113,24 @@ public class ContentWrapper extends Content implements com.tyron.editor.Content 
                               int initialOldLength,
                               int moveOffset) {
         assert moveOffset >= 0 && moveOffset <= length() : "Invalid moveOffset: " + moveOffset;
-        ContentEvent event =
-                new ContentEventImpl(this, offset, oldString, newString, modificationStamp,
-                        wholeTextReplaced, initialStartOffset, initialOldLength, moveOffset);
+        ContentEvent event = new ContentEventImpl(this, offset, oldString, newString, modificationStamp,
+                wholeTextReplaced, initialStartOffset, initialOldLength, moveOffset);
         getSequence().incrementAndGet();
 
         CharSequence prevText = this;
         changedUpdate(event, newModificationStamp, prevText);
+
+        // Update modification stamp
+        this.modificationStamp = newModificationStamp;
     }
 
+    /**
+     * Notify listeners about content change.
+     */
     protected void changedUpdate(@NonNull ContentEvent event,
                                  long newModificationStamp,
                                  @NonNull CharSequence prevText) {
-//        assert event.getOldFragment().length() == event.getOldLength();
-//        assert event.getNewFragment().length() == event.getNewLength();
-        if (contentListeners == null) {
-            return;
-        }
+        if (contentListeners == null) return;
         for (ContentListener contentListener : contentListeners) {
             contentListener.contentChanged(event);
         }
@@ -142,7 +148,9 @@ public class ContentWrapper extends Content implements com.tyron.editor.Content 
 
     @Override
     public void addContentListener(ContentListener listener) {
-        contentListeners.add(listener);
+        if (listener != null) {
+            contentListeners.add(listener);
+        }
     }
 
     @Override
@@ -152,7 +160,7 @@ public class ContentWrapper extends Content implements com.tyron.editor.Content 
 
     @Override
     public void setModificationStamp(long stamp) {
-        modificationStamp = stamp;
+        this.modificationStamp = stamp;
     }
 
     @Override
