@@ -1,5 +1,7 @@
 package com.tyron.code.ui.editor.impl;
 
+import android.net.Uri;
+
 import androidx.annotation.NonNull;
 
 import com.tyron.code.ui.editor.impl.image.ImageEditorProvider;
@@ -12,6 +14,9 @@ import com.tyron.fileeditor.api.FileEditorProviderManager;
 import java.io.File;
 import java.util.ArrayList;
 
+/**
+ * Implementation of FileEditorProviderManager for both local File and SAF Uri support.
+ */
 public class FileEditorProviderManagerImpl implements FileEditorProviderManager {
 
     private static FileEditorProviderManager sInstance = null;
@@ -36,14 +41,31 @@ public class FileEditorProviderManagerImpl implements FileEditorProviderManager 
     private void registerBuiltInProviders() {
         registerProvider(new RosemoeEditorProvider());
         registerProvider(new ImageEditorProvider());
+        registerProvider(new SquircleEditorProvider());
+        registerProvider(new LayoutTextEditorProvider());
+        // Add more providers here if needed
     }
 
     @Override
     public FileEditorProvider[] getProviders(@NonNull File file) {
         mSharedProviderList.clear();
-        for(int i = mProviders.size() - 1; i >= 0; i--){
+        for (int i = mProviders.size() - 1; i >= 0; i--) {
             FileEditorProvider provider = mProviders.get(i);
-            if(provider.accept(file)){
+            if (provider.accept(file)) {
+                mSharedProviderList.add(provider);
+            }
+        }
+        return mSharedProviderList.toArray(new FileEditorProvider[0]);
+    }
+
+    /**
+     * New method: Get editor providers for SAF Uri files (Android 11+ public folder support).
+     */
+    public FileEditorProvider[] getProviders(@NonNull Uri uri) {
+        mSharedProviderList.clear();
+        for (int i = mProviders.size() - 1; i >= 0; i--) {
+            FileEditorProvider provider = mProviders.get(i);
+            if (provider.accept(uri)) {
                 mSharedProviderList.add(provider);
             }
         }
@@ -52,6 +74,12 @@ public class FileEditorProviderManagerImpl implements FileEditorProviderManager 
 
     @Override
     public FileEditorProvider getProvider(@NonNull String typeId) {
+        for (int i = mProviders.size() - 1; i >= 0; i--) {
+            FileEditorProvider provider = mProviders.get(i);
+            if (typeId.equals(provider.getEditorTypeId())) {
+                return provider;
+            }
+        }
         return null;
     }
 
@@ -66,7 +94,7 @@ public class FileEditorProviderManagerImpl implements FileEditorProviderManager 
         mProviders.add(provider);
     }
 
-    private void unregisterProvider(FileEditorProvider provider) {
+    public void unregisterProvider(FileEditorProvider provider) {
         mProviders.remove(provider);
     }
 }
