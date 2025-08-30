@@ -3,6 +3,7 @@ package com.tyron.code.ui.editor.impl.text.rosemoe;
 import android.content.Context;
 import android.graphics.Canvas;
 import android.graphics.Paint;
+import android.net.Uri;
 import android.util.AttributeSet;
 
 import androidx.annotation.NonNull;
@@ -46,6 +47,9 @@ import io.github.rosemoe.sora.widget.component.EditorTextActionWindow;
 import io.github.rosemoe.sora.widget.schemes.EditorColorScheme;
 import io.github.rosemoe.sora2.text.EditorUtil;
 
+/**
+ * CodeEditorView extends CodeEditor and supports both File and SAF/Uri.
+ */
 public class CodeEditorView extends CodeEditor implements Editor {
 
     private final Set<Character> IGNORED_PAIR_ENDS = ImmutableSet.<Character>builder()
@@ -62,6 +66,7 @@ public class CodeEditorView extends CodeEditor implements Editor {
     private List<DiagnosticWrapper> mDiagnostics;
     private Consumer<List<DiagnosticWrapper>> mDiagnosticsListener;
     private File mCurrentFile;
+    private Uri mCurrentUri;
     private EditorViewModel mViewModel;
 
     private final Paint mDiagnosticPaint;
@@ -132,10 +137,12 @@ public class CodeEditorView extends CodeEditor implements Editor {
         super.setColorScheme(colors);
     }
 
-
     @Override
     public void setDiagnostics(List<DiagnosticWrapper> diagnostics) {
         mDiagnostics = diagnostics;
+        if (mDiagnosticsListener != null) {
+            mDiagnosticsListener.accept(diagnostics);
+        }
     }
 
     public void setDiagnosticsListener(Consumer<List<DiagnosticWrapper>> listener) {
@@ -147,9 +154,27 @@ public class CodeEditorView extends CodeEditor implements Editor {
         return mCurrentFile;
     }
 
+    public Uri getCurrentUri() {
+        return mCurrentUri;
+    }
+
+    /**
+     * Open file by File (for local files).
+     */
     @Override
     public void openFile(File file) {
         mCurrentFile = file;
+        mCurrentUri = null;
+        // You may need to actually load file contents here if needed.
+    }
+
+    /**
+     * Open file by Uri (for SAF files).
+     */
+    public void openFile(Uri uri) {
+        mCurrentUri = uri;
+        mCurrentFile = null;
+        // You may need to actually load file contents here if needed.
     }
 
     @Override
@@ -166,12 +191,9 @@ public class CodeEditorView extends CodeEditor implements Editor {
 
     @Override
     public boolean useTab() {
-        //noinspection ConstantConditions, editor language can be null
         if (getEditorLanguage() == null) {
-            // enabled by default
             return true;
         }
-
         return getEditorLanguage().useTab();
     }
 
@@ -196,7 +218,6 @@ public class CodeEditorView extends CodeEditor implements Editor {
             char currentChar = getText().charAt(getCursor().getLeft());
             char c = text.charAt(0);
             if (IGNORED_PAIR_ENDS.contains(c) && c == currentChar) {
-                // ignored pair end, just move the cursor over the character
                 setSelection(getCursor().getLeftLine(), getCursor().getLeftColumn() + 1);
                 return;
             }
@@ -391,5 +412,15 @@ public class CodeEditorView extends CodeEditor implements Editor {
     @Override
     protected void onDraw(Canvas canvas) {
         super.onDraw(canvas);
+    }
+
+    /**
+     * Hide code assist and completion windows.
+     */
+    public void hideEditorWindows() {
+        if (mCompletionWindow != null) {
+            mCompletionWindow.hide();
+        }
+        getComponent(EditorAutoCompletion.class).hideWindow();
     }
 }
