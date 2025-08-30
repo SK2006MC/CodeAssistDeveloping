@@ -12,6 +12,9 @@ import java.io.File;
 import java.util.ArrayList;
 import java.util.List;
 
+import android.net.Uri;
+import androidx.documentfile.provider.DocumentFile;
+
 public class EditorTabUtil {
 
     public static void updateTabLayout(@NonNull TabLayout mTabLayout, List<FileEditor> oldList, List<FileEditor> files) {
@@ -43,7 +46,25 @@ public class EditorTabUtil {
 
             private TabLayout.Tab getTabLayout(FileEditor editor) {
                 TabLayout.Tab tab = mTabLayout.newTab();
-                tab.setText(editor.getFile().getName());
+                String filename = null;
+
+                File file = editor.getFile();
+                if (file != null) {
+                    filename = file.getName();
+                } else if (editor.getUri() != null) {
+                    // اگر FileEditor با Uri کار می‌کند، نام فایل را از DocumentFile بگیر
+                    Uri fileUri = editor.getUri();
+                    DocumentFile docFile = DocumentFile.fromSingleUri(mTabLayout.getContext(), fileUri);
+                    if (docFile != null) {
+                        filename = docFile.getName();
+                    } else {
+                        filename = "Unknown";
+                    }
+                } else {
+                    filename = "Unknown";
+                }
+
+                tab.setText(filename);
                 return tab;
             }
         });
