@@ -1,4 +1,4 @@
-name: Android CI
+name: Build APK
 
 on:
   pull_request:
@@ -6,36 +6,54 @@ on:
 
 jobs:
   build:
-    name: Build debug apk
+    name: Build Debug APK
     runs-on: ubuntu-latest
-    steps:
-      - name: Cancel previous runs
-        uses: styfle/cancel-workflow-action@0.5.0
-        with:
-          access_token: ${{ github.token }}
+    timeout-minutes: 30
 
-      - uses: actions/checkout@v2
-    
-      - name: set up JDK 11
-        uses: actions/setup-java@v2
+    steps:
+      - name: Cancel Previous Runs
+        uses: styfle/cancel-workflow-action@0.12.1
         with:
-          java-version: '11'
-          distribution: 'adopt'
+          access_token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
           cache: gradle
 
-      - name: Grant execute permission for gradlew
-        run: chmod +x gradlew
-
-      - name: Build debug apk
-        uses: eskatos/gradle-command-action@v1
+      - name: Cache Gradle dependencies
+        uses: actions/cache@v4
         with:
-          arguments: assembleDebug
-          distributions-cache-enabled: true
-          dependencies-cache-enabled: true
-          configuration-cache-enabled: true
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ runner.os }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+          restore-keys: |
+            gradle-${{ runner.os }}-
 
-      - name: Upload debug apk
-        uses: actions/upload-artifact@v2
+      - name: Grant execute permission for gradlew
+        run: chmod +x ./gradlew
+
+      - name: Build Debug APK
+        run: ./gradlew assembleDebug --no-daemon --stacktrace
+
+      - name: Verify APK Output
+        run: |
+          if [ ! -f app/build/outputs/apk/debug/app-debug.apk ]; then
+            echo "APK not found!"
+            exit 1
+          fi
+
+      - name: Upload Debug APK
+        uses: actions/upload-artifact@v4
         with:
           name: apk-debug
-          path: app/build/outputs/apk/debug
+          path: app/build/outputs/apk/debug/app-debug.apk
+          retention-days: 7
